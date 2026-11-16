@@ -19,6 +19,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:-local-demo-germination-bayes-change-this-key}
       SEED_DEMO: ${SEED_DEMO:-true}
+      ARTIFACT_DIR: /artifacts
+      LEASE_TTL_SECONDS: ${LEASE_TTL_SECONDS:-30}
+      SWEEP_INTERVAL_SECONDS: ${SWEEP_INTERVAL_SECONDS:-5}
     ports: ["${BACKEND_PORT:-19236}:8000"]
     volumes: ["artifacts:/artifacts"]
     depends_on:

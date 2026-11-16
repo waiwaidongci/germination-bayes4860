@@ -94,8 +94,18 @@ npm ci
 npm run dev
 ```
 
-backend/src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}按来源、边际拟合、后验、运行、审阅拆分；backend/scripts/seed_demo.py；migration为可选索引，metadata首次建表，非独立全量DDL。frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}为React应用。
+backend/src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}按来源、边际拟合、后验、运行、审阅拆分；backend/scripts/seed_demo.py；migration为可选索引，metadata首次建表，非独立全量DDL。韧性测试 `pip install -r requirements-dev.txt` 后在 backend 执行 `python -m pytest tests/`（SQLite+fakeredis，无需Postgres/Redis）。frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}为React应用。
 
 角色枚举backend/constants/roles与frontend/constants/enums用于鉴权/显示，队列状态backend/constants/status与前端RunStatus用于worker/StatusBadge，审阅Literal在backend/schemas/note与model/service/前端ReviewStatus。环境变量COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、JWT_SECRET、SEED_DEMO在.env；DATABASE_URL/REDIS_URL由Compose定义。
 
-测试脚本、真实截图、关键JSON/CSV与已知差异在同批test-artifacts/gb-0032/TESTING.md，源码不放日志或截图。当前单worker，无来源上传、崩溃恢复、多worker去重或设备操作。清理仅本题：`docker compose down -v --remove-orphans`。MIT License。
+测试脚本、真实截图、关键JSON/CSV与已知差异在同批test-artifacts/gb-0032/TESTING.md，源码不放日志或截图。韧性运行有 `backend/tests/`（pytest + fakeredis + SQLite），覆盖断点续算、通知丢失扫描、并发领取、超时接管、迟到实例拒绝与半份结果隔离。清理仅本题：`docker compose down -v --remove-orphans`。MIT License。
+
+## 韧性运行、分段续算与去重
+
+数据库（`bayes_runs`）是排队与状态的唯一事实源，Redis 列表只作唤醒通知；通知丢失、worker 崩溃或重启后，定时扫描（`SWEEP_INTERVAL_SECONDS`，默认5秒）按数据库事实自动恢复，不依赖通知也能找到全部任务。
+
+- **去重不另建**：同研究同情景（阈值/未来m/提交时输入指纹）在排队或计算中共享 `dedup_key`，部分唯一索引 `uq_bayes_runs_active_dedup` 在数据库层兜底并发提交；重提返回同一运行（响应带 `reused:true`），终态后释放去重键，允许作为历史新建。不同阈值/未来m是不同情景，不去重。
+- **租约与接管**：领取用条件 UPDATE 原子完成，并发 worker 只有一个成功。运行持租约（`LEASE_TTL_SECONDS`，默认30秒），后台线程按 TTL/3 续约；租约超时即可被其他 worker 接管，`attempts` 记领取/接管次数、`recoveries` 记自动恢复次数。迟到实例的条件发布/失败上报不命中当前租约，结果被拒绝，同一研究只发布一份完整结果。
+- **分段续算**：先验拟合（`fit.json`）与逐批条件后验/预测（`lot-NNNN.json`）分别原子写检查点到 `/artifacts/run-<id>/`。检查点嵌入算法版本与提交时计数/情景指纹（`fit_hash`/`input_hash`）；来源（n/k、阈值、未来m、算法版本）变动使旧检查点失效重算，来源变化不混入续算。缺失或损坏（无法解析、字段缺失、指纹不符）的分段自动重算。
+- **完整结果门控**：完整结果先原子写 `run-<id>.json` 再条件落库；若崩溃在落库前，扫描在租约超时后校验指纹自洽并回填。只有自洽完整结果可查看/下载，排队或计算中的运行接口只返回状态、进度、恢复次数与失败原因，`result` 为空，半份结果不供查看和下载。
+- **可观测**：运行记录含 `progress{stage,total,completed,detail}`、`attempts`、`recoveries`、`error`；结果页展示进度条、领取/恢复次数与失败原因，旧版已完成研究保持可读。多 worker 可安全横向扩展（同一 artifacts 命名卷与数据库），默认 compose 仍为单 worker 拓扑。
